@@ -1,4 +1,5 @@
 // v0.1.0: 1st version
+// v0.2.0: add more options same as beta-maps1-v2.py
 // to do: add lib names and add number to the 1st element of vector
 // to make dynamic smaller app: cargo rustc --release -- -C prefer-dynamic
 use std::io::{self, BufRead, BufReader};
@@ -7,21 +8,24 @@ use clap::{App, Arg};
 
 fn main() {
     // parse options
-    let matches = App::new("Calc_mapping_space")
-        .version("0.1.0")
+    let matches = App::new("calc_mapping_space_by_libs")
+        .version("0.2.0")
         .author("Junli Zhang <zhjl86@gmail.com>")
         .about("Calculate mapping space and %GC from MAPS output parsed_Kronos_mpileup.txt.gz")
-        .arg(Arg::from_usage("-m, --max_missing=[NUMBER] 'maxium number of mising libs'"))
-        .arg(Arg::from_usage("-c, --min_cov=[NUMBER]              'minimum coverage at positions'"))
-        .arg(Arg::from_usage("-n, --max_depth=[NUMBER] 'maxium depth to summarize'"))
+        .arg(Arg::from_usage("-c, --min_cov=[NUMBER]              'minimum coverage at positions (1)'"))
+        .arg(Arg::from_usage("-n, --max_depth=[NUMBER] 'maxium depth to summarize in the output (10)'"))
+        .arg(Arg::from_usage("-l, --min_libs=[NUMBER] 'minimum number of libraries with at least 1 coverage to be considered a valid position (15)'"))
+        .arg(Arg::from_usage("-C, --max_cov=[NUMBER] 'maximum position coverage (sum of all libs) to be considered as a vaild position (10000)'"))
         .get_matches();
     // get the values
     let min_cov: u32 = matches.value_of("min_cov").unwrap_or("1").parse().expect("Please give a number of minimum coverage"); // minimum coverage at a position
     println!("minimum coverage is {}", min_cov);
-    let max_missing: usize = matches.value_of("max_missing").unwrap_or("4").parse().expect("Please give a number of maximum missing libs");
-    println!("Maximum missing libs allowed is {}", max_missing);
-    let max_depth: u32 = matches.value_of("max_depth").unwrap_or("10").parse().expect("Please give a number of maximum missing libs");
+    let max_depth: u32 = matches.value_of("max_depth").unwrap_or("10").parse().expect("Please give a number of maximum depth to summarize");
     println!("Maximum depth to report is {}", max_depth);
+    let min_libs: usize = matches.value_of("min_libs").unwrap_or("15").parse().expect("Please give a number of minimum libs to consider");
+    println!("Minimum libraries covered at least once is {}", min_libs);
+    let max_cov: u32 = matches.value_of("max_cov").unwrap_or("10000").parse().expect("Please give a number of maximum coverage for all libs for a valid position");
+    println!("Maximum coverage for this position in all libs is {}", max_cov);
 
 
     let input = io::stdin();
@@ -32,7 +36,7 @@ fn main() {
     let nsample = (ncol - 3) / 4;
     println!("First line has {} columns and {} samples.", ncol, nsample);
     let zero_vec = vec![0; nsample];
-    let min_lib_count = nsample - max_missing;
+    let max_missing = nsample - min_libs;
     let mut good_lines = 0;
     let mut map = HashMap::new(); // count A, T, G, C
     let mut map_libs = HashMap::new(); // key is coverage, value is a vector of occurance for each lib
@@ -50,13 +54,18 @@ fn main() {
             target += 4;
         }
     }
+    // tmp store for each line
+    let mut vec0 = vec![0; nsample];
+    let mut gc0 = vec![0; nsample];
 
     for line in reader.lines() {
+        let mut nmiss = 0;
         let mut ngood = 0;
         let mut n = 0;
         let mut target = 7;
         let mut nt = String::from("A"); // initial value for column 2
         let mut sample = 0; // nth sample
+        let mut pos_coverage = 0; // calculate the total coverage for this position (line)
         for word in line.unwrap().split("\t") {
             n += 1;
             if n == 3 {
@@ -64,13 +73,18 @@ fn main() {
             }
             if n == target {
                 target += 4;
-                if word != "." {
+                if word == "." {
+                    nmiss += 1;
+                    if nmiss > max_missing {break}
+                    vec0[sample] = 0;
+                    gc0[sample] = 0;
+                } else {
                     let nn: u32 = word.parse().unwrap();
-                    let kk = if nn < max_depth {nn} else {max_depth};
-                    let count = map_libs.entry(kk).or_insert(zero_vec.clone());
-                    count[sample] += 1;
-                    let count2 = map_gc.entry(kk).or_insert(zero_vec.clone());
-                    if gc.contains(&nt) {count2[sample] += 1;}
+                    pos_coverage += nn;
+                    if pos_coverage > max_cov {break}
+                    // tmp store all the numbers
+                    vec0[sample] = nn;
+                    gc0[sample] = if gc.contains(&nt) {1} else {0};
                     if nn >= min_cov {
                         ngood += 1;
                     }
@@ -80,7 +94,22 @@ fn main() {
                 continue;
             }
         }
-        if ngood >= min_lib_count {
+        // check whether this position is valid
+        if nmiss <= max_missing && pos_coverage <= max_cov {
+            for i in 0..nsample {
+                let dep = vec0[i];
+                if dep > 0 {
+                    let kk = if dep < max_depth {dep} else {max_depth};
+                    let count = map_libs.entry(kk).or_insert(zero_vec.clone());
+                    count[i] += 1;
+                    let count2 = map_gc.entry(kk).or_insert(zero_vec.clone());
+                    count2[i] += gc0[i];
+                }
+            }
+        }
+
+        // get good
+        if ngood >= min_libs {
             good_lines += 1;
             let count = map.entry(nt).or_insert(0);
             *count += 1;
